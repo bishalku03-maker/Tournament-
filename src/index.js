@@ -232,10 +232,35 @@ bot.command('status', async (ctx) => {
   return ctx.replyWithHTML(buildTournamentDetails(tournament, participantCount));
 });
 
-bot.launch().then(() => {
+async function startBot() {
+  const port = process.env.PORT ? Number(process.env.PORT) : 3000;
+  const renderHost = process.env.RENDER_EXTERNAL_HOSTNAME;
+  const webhookDomain = renderHost ? `https://${renderHost}` : process.env.WEBHOOK_DOMAIN;
+
+  if (webhookDomain) {
+    console.log('Starting bot using webhook mode on', webhookDomain);
+    await bot.launch({
+      webhook: {
+        domain: webhookDomain,
+        port,
+        hookPath: `/bot${process.env.BOT_TOKEN}`,
+      },
+    });
+  } else {
+    console.log('Starting bot using polling mode');
+    await bot.launch({ polling: { timeout: 50 } });
+  }
+}
+
+startBot().then(() => {
   console.log('Tournament bot started.');
 }).catch((err) => {
-  console.error('Failed to start bot', err);
+  const description = err?.response?.description || err?.message || '';
+  if (description.includes('Conflict: terminated by other getUpdates request')) {
+    console.error('Failed to start bot due to an existing polling instance. Ensure only one bot instance is running.');
+  } else {
+    console.error('Failed to start bot', err);
+  }
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
