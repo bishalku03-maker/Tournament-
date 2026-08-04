@@ -1,17 +1,21 @@
 import 'dotenv/config';
 import { Telegraf, Markup } from 'telegraf';
 import { Storage } from './db.js';
-import { generateId, formatDateTime, buildSingleEliminationBracket, buildSchedule, formatPrizeDistribution } from './utils.js';
-import { isAdmin, buildAdminKeyboard, buildTournamentSummary, buildTournamentDetails, buildRegisterKeyboard } from './admin.js';
+import { generateId, formatDateTime, buildSingleEliminationBracket, formatPrizeDistribution } from './utils.js';
+import { isAdmin, buildAdminKeyboard, buildTournamentSummary, buildTournamentDetails } from './admin.js';
 import { ADMIN_ACTIONS, TOURNAMENT_STATUS, TOURNAMENT_TYPE, MATCH_STATUS } from './constants.js';
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const ownerId = process.env.OWNER_ID;
-const db = new Storage(process.env.DATABASE_PATH);
+const db = await Storage.create({
+  mongoUri: process.env.MONGODB_URI,
+  mongoDbName: process.env.MONGODB_DB,
+  databasePath: process.env.DATABASE_PATH,
+});
 
-function createTournament(params) {
+async function createTournament(params) {
   const id = generateId('tourn');
-  db.run(`INSERT INTO tournaments (id, title, type, max_players, registration_fee, prize_pool, prize_distribution, status, registration_open, start_date, end_date, rounds, bracket_json, schedule_json) VALUES (@id, @title, @type, @max_players, @registration_fee, @prize_pool, @prize_distribution, @status, @registration_open, @start_date, @end_date, @rounds, @bracket_json, @schedule_json)`, {
+  return await db.createTournament({
     id,
     title: params.title,
     type: params.type,
@@ -27,58 +31,35 @@ function createTournament(params) {
     bracket_json: JSON.stringify([]),
     schedule_json: JSON.stringify([]),
   });
-  return db.get('SELECT * FROM tournaments WHERE id = @id', { id });
 }
 
-function getActiveTournament() {
-  return db.get('SELECT * FROM tournaments ORDER BY created_at DESC LIMIT 1');
+async function getActiveTournament() {
+  return await db.getActiveTournament();
 }
 
-function getParticipants(tournamentId) {
-  return db.all('SELECT * FROM participants WHERE tournament_id = @tournamentId AND status = @status ORDER BY registered_at ASC', {
-    tournamentId,
-    status: 'active',
-  });
+async function getParticipants(tournamentId) {
+  return await db.getParticipants(tournamentId);
 }
 
-function registerPlayer(tournament, user) {
-  try {
-    db.run(`INSERT INTO participants (tournament_id, telegram_id, username, bingo_username) VALUES (@tournamentId, @telegramId, @username, @bingoUsername)`, {
-      tournamentId: tournament.id,
-      telegramId: user.id.toString(),
-      username: user.username || `${user.first_name || ''} ${user.last_name || ''}`.trim(),
-      bingoUsername: user.username || '',
-    });
-    return true;
-  } catch (error) {
-    return false;
-  }
+async function registerPlayer(tournament, user) {
+  return await db.addParticipant(
+    tournament.id,
+    user.id.toString(),
+    user.username || `${user.first_name || ''} ${user.last_name || ''}`.trim(),
+    user.username || '',
+  );
 }
 
-function generateBracket(tournamentId) {
-  const participants = getParticipants(tournamentId);
+async function generateBracket(tournamentId) {
+  const participants = await getParticipants(tournamentId);
   const playerIds = participants.map((p) => p.telegram_id);
   const rounds = buildSingleEliminationBracket(playerIds);
-  db.run('UPDATE tournaments SET bracket_json = @bracket, status = @status WHERE id = @id', {
-    bracket: JSON.stringify(rounds),
+  await db.updateTournament(tournamentId, {
+    bracket_json: JSON.stringify(rounds),
     status: TOURNAMENT_STATUS.BRACKET,
-    id: tournamentId,
   });
-  db.run('DELETE FROM matches WHERE tournament_id = @id', { id: tournamentId });
-  const insert = db.db.prepare('INSERT INTO matches (id, tournament_id, round, player_a, player_b, scheduled_at, status) VALUES (@id, @tournamentId, @round, @playerA, @playerB, @scheduledAt, @status)');
-  db.transaction(() => {
-    rounds.flat().forEach((match) => {
-      insert.run({
-        id: match.id,
-        tournamentId,
-        round: match.round,
-        playerA: match.playerA,
-        playerB: match.playerB,
-        scheduledAt: null,
-        status: match.status === 'bye' ? MATCH_STATUS.BYE : MATCH_STATUS.PENDING,
-      });
-    });
-  });
+  await db.deleteMatchesByTournamentId(tournamentId);
+  await db.insertMatches(rounds.flat());
   return rounds;
 }
 
@@ -92,11 +73,11 @@ function buildTournamentKeyboard(tournament) {
 }
 
 bot.start(async (ctx) => {
-  const tournament = getActiveTournament();
+  const tournament = await getActiveTournament();
   if (!tournament) {
     return ctx.reply('Welcome to the Bingo Tournament Bot. An admin can create a tournament to get started.');
   }
-  const participantCount = db.get('SELECT COUNT(*) as count FROM participants WHERE tournament_id = @id', { id: tournament.id }).count;
+  const participantCount = await db.getParticipantCount(tournament.id);
   await ctx.replyWithHTML(buildTournamentDetails(tournament, participantCount), buildTournamentKeyboard(tournament));
 });
 
@@ -104,12 +85,7 @@ bot.command('create', async (ctx) => {
   if (!isAdmin(ctx, ownerId)) {
     return ctx.reply('You are not authorized to use this command.');
   }
-  const examplePrize = JSON.stringify([
-    { place: '1st Prize', amount: '₹3000' },
-    { place: '2nd Prize', amount: '₹1500' },
-    { place: '3rd Prize', amount: '₹500' },
-  ]);
-  const tournament = createTournament({
+  const tournament = await createTournament({
     title: 'Bingo Championship',
     type: TOURNAMENT_TYPE.FREE,
     maxPlayers: 64,
@@ -128,7 +104,7 @@ bot.command('admin', async (ctx) => {
   if (!isAdmin(ctx, ownerId)) {
     return ctx.reply('This command is for admins only.');
   }
-  const tournament = getActiveTournament();
+  const tournament = await getActiveTournament();
   if (!tournament) {
     return ctx.reply('No tournament found. Create one first with /create.');
   }
@@ -137,28 +113,22 @@ bot.command('admin', async (ctx) => {
 
 bot.action(/register\|(.*)/, async (ctx) => {
   const tournamentId = ctx.match[1];
-  const tournament = db.get('SELECT * FROM tournaments WHERE id = @id', { id: tournamentId });
+  const tournament = await db.getTournamentById(tournamentId);
   if (!tournament) {
     return ctx.answerCbQuery('Tournament not found.');
   }
   if (!tournament.registration_open) {
     return ctx.answerCbQuery('Registration is closed.');
   }
-  const existing = db.get('SELECT * FROM participants WHERE tournament_id = @tournamentId AND telegram_id = @telegramId', {
-    tournamentId,
-    telegramId: ctx.from.id.toString(),
-  });
+  const existing = await db.getParticipant(tournamentId, ctx.from.id.toString());
   if (existing) {
     return ctx.answerCbQuery('You are already registered.');
   }
-  const participantCount = db.get('SELECT COUNT(*) as count FROM participants WHERE tournament_id = @id AND status = @status', {
-    id: tournamentId,
-    status: 'active',
-  }).count;
+  const participantCount = await db.getParticipantCount(tournamentId);
   if (tournament.max_players && participantCount >= tournament.max_players) {
     return ctx.answerCbQuery('The tournament is full.');
   }
-  const registered = registerPlayer(tournament, ctx.from);
+  const registered = await registerPlayer(tournament, ctx.from);
   if (!registered) {
     return ctx.answerCbQuery('Unable to register. Please try again.');
   }
@@ -168,14 +138,11 @@ bot.action(/register\|(.*)/, async (ctx) => {
 
 bot.action(/view_tournament\|(.*)/, async (ctx) => {
   const tournamentId = ctx.match[1];
-  const tournament = db.get('SELECT * FROM tournaments WHERE id = @id', { id: tournamentId });
+  const tournament = await db.getTournamentById(tournamentId);
   if (!tournament) {
     return ctx.answerCbQuery('Tournament not found.');
   }
-  const participantCount = db.get('SELECT COUNT(*) as count FROM participants WHERE tournament_id = @id AND status = @status', {
-    id: tournamentId,
-    status: 'active',
-  }).count;
+  const participantCount = await db.getParticipantCount(tournamentId);
   await ctx.answerCbQuery();
   return ctx.replyWithHTML(buildTournamentDetails(tournament, participantCount));
 });
@@ -186,46 +153,46 @@ bot.action(new RegExp(`(${Object.values(ADMIN_ACTIONS).join('|')})\|(.+)`), asyn
   }
   const action = ctx.match[1];
   const tournamentId = ctx.match[2];
-  const tournament = db.get('SELECT * FROM tournaments WHERE id = @id', { id: tournamentId });
+  const tournament = await db.getTournamentById(tournamentId);
   if (!tournament) {
     return ctx.answerCbQuery('Tournament not found.');
   }
 
   switch (action) {
     case ADMIN_ACTIONS.OPEN_REG:
-      db.run('UPDATE tournaments SET registration_open = 1, status = @status WHERE id = @id', { status: TOURNAMENT_STATUS.REGISTRATION, id: tournamentId });
+      await db.updateTournament(tournamentId, { registration_open: 1, status: TOURNAMENT_STATUS.REGISTRATION });
       await ctx.answerCbQuery('Registration opened.');
       return ctx.editMessageText(buildTournamentSummary({ ...tournament, registration_open: 1, status: TOURNAMENT_STATUS.REGISTRATION }), { parse_mode: 'HTML', reply_markup: buildAdminKeyboard(tournamentId).reply_markup });
     case ADMIN_ACTIONS.CLOSE_REG:
-      db.run('UPDATE tournaments SET registration_open = 0 WHERE id = @id', { id: tournamentId });
+      await db.updateTournament(tournamentId, { registration_open: 0 });
       await ctx.answerCbQuery('Registration closed.');
       return ctx.editMessageText(buildTournamentSummary({ ...tournament, registration_open: 0 }), { parse_mode: 'HTML', reply_markup: buildAdminKeyboard(tournamentId).reply_markup });
     case ADMIN_ACTIONS.SHUFFLE:
       await ctx.answerCbQuery('Participants shuffled.');
       return ctx.reply('Participant order can be randomized during bracket generation.');
     case ADMIN_ACTIONS.GENERATE_BRACKET: {
-      const rounds = generateBracket(tournamentId);
+      const rounds = await generateBracket(tournamentId);
       await ctx.answerCbQuery('Bracket generated.');
       return ctx.reply(`Bracket created with ${rounds.length} rounds.`);
     }
     case ADMIN_ACTIONS.START:
-      db.run('UPDATE tournaments SET status = @status WHERE id = @id', { status: TOURNAMENT_STATUS.RUNNING, id: tournamentId });
+      await db.updateTournament(tournamentId, { status: TOURNAMENT_STATUS.RUNNING });
       await ctx.answerCbQuery('Tournament started.');
       return ctx.reply('Tournament status set to running. Notify players and update match status as results arrive.');
     case ADMIN_ACTIONS.PAUSE:
-      db.run('UPDATE tournaments SET status = @status WHERE id = @id', { status: TOURNAMENT_STATUS.PAUSED, id: tournamentId });
+      await db.updateTournament(tournamentId, { status: TOURNAMENT_STATUS.PAUSED });
       await ctx.answerCbQuery('Tournament paused.');
       return ctx.reply('Tournament paused. Use resume to continue.');
     case ADMIN_ACTIONS.RESUME:
-      db.run('UPDATE tournaments SET status = @status WHERE id = @id', { status: TOURNAMENT_STATUS.RUNNING, id: tournamentId });
+      await db.updateTournament(tournamentId, { status: TOURNAMENT_STATUS.RUNNING });
       await ctx.answerCbQuery('Tournament resumed.');
       return ctx.reply('Tournament resumed.');
     case ADMIN_ACTIONS.END:
-      db.run('UPDATE tournaments SET status = @status WHERE id = @id', { status: TOURNAMENT_STATUS.COMPLETED, id: tournamentId });
+      await db.updateTournament(tournamentId, { status: TOURNAMENT_STATUS.COMPLETED });
       await ctx.answerCbQuery('Tournament ended.');
       return ctx.reply('Tournament completed. Final results can be published.');
     case ADMIN_ACTIONS.VIEW_PARTICIPANTS: {
-      const participants = getParticipants(tournamentId);
+      const participants = await getParticipants(tournamentId);
       const text = participants.length > 0
         ? participants.map((p, index) => `${index + 1}. ${p.username} (${p.telegram_id})`).join('\n')
         : 'No participants yet.';
@@ -233,7 +200,7 @@ bot.action(new RegExp(`(${Object.values(ADMIN_ACTIONS).join('|')})\|(.+)`), asyn
       return ctx.replyWithHTML(`<b>Registered Players:</b>\n${text}`);
     }
     case ADMIN_ACTIONS.EXPORT_PARTICIPANTS: {
-      const participants = getParticipants(tournamentId);
+      const participants = await getParticipants(tournamentId);
       const csv = ['telegram_id,username,registered_at', ...participants.map((p) => `${p.telegram_id},${p.username},${p.registered_at}`)].join('\n');
       await ctx.answerCbQuery('Participants exported.');
       return ctx.replyWithDocument({ source: Buffer.from(csv, 'utf-8'), filename: `${tournament.title.replace(/\s+/g, '_')}_participants.csv` });
@@ -244,11 +211,11 @@ bot.action(new RegExp(`(${Object.values(ADMIN_ACTIONS).join('|')})\|(.+)`), asyn
 });
 
 bot.command('status', async (ctx) => {
-  const tournament = getActiveTournament();
+  const tournament = await getActiveTournament();
   if (!tournament) {
     return ctx.reply('No active tournament at the moment.');
   }
-  const participantCount = db.get('SELECT COUNT(*) as count FROM participants WHERE tournament_id = @id', { id: tournament.id }).count;
+  const participantCount = await db.getParticipantCount(tournament.id);
   return ctx.replyWithHTML(buildTournamentDetails(tournament, participantCount));
 });
 
