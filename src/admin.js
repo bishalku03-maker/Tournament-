@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf';
-import { generateId, formatPrizeDistribution, formatDateTime } from './utils.js';
+import { generateId, formatPrizeDistribution, formatDateTime, formatTournamentStatus } from './utils.js';
 import { TOURNAMENT_STATUS, TOURNAMENT_TYPE, ADMIN_ACTIONS } from './constants.js';
 
 export function isAdmin(ctx, ownerId) {
