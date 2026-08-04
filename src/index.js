@@ -63,6 +63,19 @@ async function generateBracket(tournamentId) {
   return rounds;
 }
 
+async function safeAnswerCbQuery(ctx, text) {
+  try {
+    return await ctx.answerCbQuery(text);
+  } catch (err) {
+    const description = err?.response?.description || err?.message || '';
+    if (description.includes('query is too old') || description.includes('query ID is invalid') || description.includes('query id is invalid')) {
+      console.warn('Ignored expired callback query:', description);
+      return;
+    }
+    console.error('Failed to answer callback query:', err);
+  }
+}
+
 function buildTournamentKeyboard(tournament) {
   const isOpen = tournament.registration_open === 1 && tournament.status === TOURNAMENT_STATUS.REGISTRATION;
   const keyboard = [
@@ -115,24 +128,24 @@ bot.action(/register\|(.*)/, async (ctx) => {
   const tournamentId = ctx.match[1];
   const tournament = await db.getTournamentById(tournamentId);
   if (!tournament) {
-    return ctx.answerCbQuery('Tournament not found.');
+    return safeAnswerCbQuery(ctx, 'Tournament not found.');
   }
   if (!tournament.registration_open) {
-    return ctx.answerCbQuery('Registration is closed.');
+    return safeAnswerCbQuery(ctx, 'Registration is closed.');
   }
   const existing = await db.getParticipant(tournamentId, ctx.from.id.toString());
   if (existing) {
-    return ctx.answerCbQuery('You are already registered.');
+    return safeAnswerCbQuery(ctx, 'You are already registered.');
   }
   const participantCount = await db.getParticipantCount(tournamentId);
   if (tournament.max_players && participantCount >= tournament.max_players) {
-    return ctx.answerCbQuery('The tournament is full.');
+    return safeAnswerCbQuery(ctx, 'The tournament is full.');
   }
   const registered = await registerPlayer(tournament, ctx.from);
   if (!registered) {
-    return ctx.answerCbQuery('Unable to register. Please try again.');
+    return safeAnswerCbQuery(ctx, 'Unable to register. Please try again.');
   }
-  await ctx.answerCbQuery('You have successfully registered.');
+  await safeAnswerCbQuery(ctx, 'You have successfully registered.');
   await ctx.replyWithHTML(`✅ <b>Registered for ${tournament.title}</b>\nPlease ensure you have started @${process.env.BINGO_BOT_USERNAME} to receive match updates.`);
 });
 
@@ -140,73 +153,73 @@ bot.action(/view_tournament\|(.*)/, async (ctx) => {
   const tournamentId = ctx.match[1];
   const tournament = await db.getTournamentById(tournamentId);
   if (!tournament) {
-    return ctx.answerCbQuery('Tournament not found.');
+    return safeAnswerCbQuery(ctx, 'Tournament not found.');
   }
   const participantCount = await db.getParticipantCount(tournamentId);
-  await ctx.answerCbQuery();
+  await safeAnswerCbQuery(ctx);
   return ctx.replyWithHTML(buildTournamentDetails(tournament, participantCount));
 });
 
 bot.action(new RegExp(`(${Object.values(ADMIN_ACTIONS).join('|')})\|(.+)`), async (ctx) => {
   if (!isAdmin(ctx, ownerId)) {
-    return ctx.answerCbQuery('Unauthorized action.');
+    return safeAnswerCbQuery(ctx, 'Unauthorized action.');
   }
   const action = ctx.match[1];
   const tournamentId = ctx.match[2];
   const tournament = await db.getTournamentById(tournamentId);
   if (!tournament) {
-    return ctx.answerCbQuery('Tournament not found.');
+    return safeAnswerCbQuery(ctx, 'Tournament not found.');
   }
 
   switch (action) {
     case ADMIN_ACTIONS.OPEN_REG:
       await db.updateTournament(tournamentId, { registration_open: 1, status: TOURNAMENT_STATUS.REGISTRATION });
-      await ctx.answerCbQuery('Registration opened.');
+      await safeAnswerCbQuery(ctx, 'Registration opened.');
       return ctx.editMessageText(buildTournamentSummary({ ...tournament, registration_open: 1, status: TOURNAMENT_STATUS.REGISTRATION }), { parse_mode: 'HTML', reply_markup: buildAdminKeyboard(tournamentId).reply_markup });
     case ADMIN_ACTIONS.CLOSE_REG:
       await db.updateTournament(tournamentId, { registration_open: 0 });
-      await ctx.answerCbQuery('Registration closed.');
+      await safeAnswerCbQuery(ctx, 'Registration closed.');
       return ctx.editMessageText(buildTournamentSummary({ ...tournament, registration_open: 0 }), { parse_mode: 'HTML', reply_markup: buildAdminKeyboard(tournamentId).reply_markup });
     case ADMIN_ACTIONS.SHUFFLE:
-      await ctx.answerCbQuery('Participants shuffled.');
+      await safeAnswerCbQuery(ctx, 'Participants shuffled.');
       return ctx.reply('Participant order can be randomized during bracket generation.');
     case ADMIN_ACTIONS.GENERATE_BRACKET: {
       const rounds = await generateBracket(tournamentId);
-      await ctx.answerCbQuery('Bracket generated.');
+      await safeAnswerCbQuery(ctx, 'Bracket generated.');
       return ctx.reply(`Bracket created with ${rounds.length} rounds.`);
     }
     case ADMIN_ACTIONS.START:
       await db.updateTournament(tournamentId, { status: TOURNAMENT_STATUS.RUNNING });
-      await ctx.answerCbQuery('Tournament started.');
+      await safeAnswerCbQuery(ctx, 'Tournament started.');
       return ctx.reply('Tournament status set to running. Notify players and update match status as results arrive.');
     case ADMIN_ACTIONS.PAUSE:
       await db.updateTournament(tournamentId, { status: TOURNAMENT_STATUS.PAUSED });
-      await ctx.answerCbQuery('Tournament paused.');
+      await safeAnswerCbQuery(ctx, 'Tournament paused.');
       return ctx.reply('Tournament paused. Use resume to continue.');
     case ADMIN_ACTIONS.RESUME:
       await db.updateTournament(tournamentId, { status: TOURNAMENT_STATUS.RUNNING });
-      await ctx.answerCbQuery('Tournament resumed.');
+      await safeAnswerCbQuery(ctx, 'Tournament resumed.');
       return ctx.reply('Tournament resumed.');
     case ADMIN_ACTIONS.END:
       await db.updateTournament(tournamentId, { status: TOURNAMENT_STATUS.COMPLETED });
-      await ctx.answerCbQuery('Tournament ended.');
+      await safeAnswerCbQuery(ctx, 'Tournament ended.');
       return ctx.reply('Tournament completed. Final results can be published.');
     case ADMIN_ACTIONS.VIEW_PARTICIPANTS: {
       const participants = await getParticipants(tournamentId);
       const text = participants.length > 0
         ? participants.map((p, index) => `${index + 1}. ${p.username} (${p.telegram_id})`).join('\n')
         : 'No participants yet.';
-      await ctx.answerCbQuery('Participants listed.');
+      await safeAnswerCbQuery(ctx, 'Participants listed.');
       return ctx.replyWithHTML(`<b>Registered Players:</b>\n${text}`);
     }
     case ADMIN_ACTIONS.EXPORT_PARTICIPANTS: {
       const participants = await getParticipants(tournamentId);
       const csv = ['telegram_id,username,registered_at', ...participants.map((p) => `${p.telegram_id},${p.username},${p.registered_at}`)].join('\n');
-      await ctx.answerCbQuery('Participants exported.');
+      await safeAnswerCbQuery(ctx, 'Participants exported.');
       return ctx.replyWithDocument({ source: Buffer.from(csv, 'utf-8'), filename: `${tournament.title.replace(/\s+/g, '_')}_participants.csv` });
     }
     default:
-      return ctx.answerCbQuery('Action not implemented yet.');
+      return safeAnswerCbQuery(ctx, 'Action not implemented yet.');
   }
 });
 
