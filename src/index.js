@@ -77,7 +77,8 @@ async function safeAnswerCbQuery(ctx, text) {
 }
 
 function buildTournamentKeyboard(tournament) {
-  const isOpen = tournament.registration_open === 1 && tournament.status === TOURNAMENT_STATUS.REGISTRATION;
+  // Use !! so both integer 1 (SQLite) and boolean true (MongoDB) work correctly
+  const isOpen = !!tournament.registration_open && tournament.status === TOURNAMENT_STATUS.REGISTRATION;
   const keyboard = [
     [Markup.button.callback('View Tournament', `view_tournament|${tournament.id}`)],
   ];

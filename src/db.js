@@ -61,7 +61,12 @@ class MongoStorage {
   }
 
   async getActiveTournament() {
-    return await this.db.collection('tournaments').find().sort({ created_at: -1 }).limit(1).next();
+    // Exclude completed tournaments so finished events don't block new ones
+    return await this.db.collection('tournaments')
+      .find({ status: { $ne: 'completed' } })
+      .sort({ created_at: -1 })
+      .limit(1)
+      .next();
   }
 
   async getTournamentById(id) {
@@ -225,7 +230,8 @@ class SQLiteStorage {
   }
 
   async getActiveTournament() {
-    return this.db.prepare('SELECT * FROM tournaments ORDER BY created_at DESC LIMIT 1').get();
+    // Exclude completed tournaments so finished events don't block new ones
+    return this.db.prepare("SELECT * FROM tournaments WHERE status != 'completed' ORDER BY created_at DESC LIMIT 1").get();
   }
 
   async getTournamentById(id) {

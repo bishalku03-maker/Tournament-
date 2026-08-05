@@ -6,6 +6,8 @@ services:
     plan: starter
     buildCommand: npm install
     startCommand: npm start
+    # IMPORTANT: Set MONGODB_URI env var to use MongoDB (recommended for persistence).
+    # If you use SQLite instead, the persistent disk below keeps data across restarts.
     envVars:
       - key: BOT_TOKEN
         sync: false
@@ -13,10 +15,16 @@ services:
         sync: false
       - key: BINGO_BOT_USERNAME
         sync: false
+      # Option A (recommended): MongoDB - comment out DATABASE_PATH and set MONGODB_URI instead
+      # - key: MONGODB_URI
+      #   sync: false
+      # - key: MONGODB_DB
+      #   value: tournamentBot
+      # Option B: SQLite with persistent disk - use the path below
       - key: DATABASE_PATH
-        value: ./database.sqlite
-        sync: false
-    mountPaths:
-      - key: database
-        path: /usr/src/app/database.sqlite
-    persistentDiskGB: 1
+        value: /data/database.sqlite
+    # Persistent disk for SQLite (Option B only). Remove this block if using MongoDB.
+    disk:
+      name: database
+      mountPath: /data
+      sizeGB: 1
