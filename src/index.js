@@ -151,12 +151,22 @@ bot.action(/register\|(.*)/, async (ctx) => {
 });
 
 bot.action(/view_tournament\|(.*)/, async (ctx) => {
+  console.log("========== VIEW TOURNAMENT ==========");
+  console.log("Callback Data:", ctx.callbackQuery.data);
+
   const tournamentId = ctx.match[1];
+  console.log("Tournament ID:", tournamentId);
+
   const tournament = await db.getTournamentById(tournamentId);
+  console.log("Tournament:", tournament);
+
   if (!tournament) {
-    return safeAnswerCbQuery(ctx, 'Tournament not found.');
+    return safeAnswerCbQuery(ctx, "Tournament not found.");
   }
+
   const participantCount = await db.getParticipantCount(tournamentId);
+  console.log("Participant Count:", participantCount);
+
   await safeAnswerCbQuery(ctx);
   return ctx.replyWithHTML(buildTournamentDetails(tournament, participantCount));
 });
